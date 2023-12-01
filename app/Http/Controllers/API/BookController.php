@@ -8,30 +8,90 @@ use Illuminate\Http\Request;
 use App\Models\Book;
 use App\Http\Requests\BookValidateRequest;
 use Auth;
+use Elastic\Elasticsearch\ClientBuilder;
+use Elastic\Elasticsearch\Client;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Str;
+
 class BookController extends Controller
 {
+    private $elasticsearch;
+
+    public function __construct(Client $client) {
+        $this->elasticsearch = $client;
+    }
+
+    // public function index(Request $request)
+    // {
+    //     $userinfo = auth('sanctum')->user();
+    //     $arrBooks = [];
+    //     $books = Book::query();
+    //     if($request->search){
+    //         $books->where(
+    //             function($query) use ($request) {
+    //               return $query
+    //                      ->where('title', 'LIKE','%'.$request->search.'%')
+    //                      ->orWhere('author', 'LIKE','%'.$request->search.'%')
+    //                      ->orWhere('genre', 'LIKE','%'.$request->search.'%')
+    //                      ->orWhere('isbn', 'LIKE','%'.$request->search.'%');
+    //              });
+    //     }
+    //     $books = $books->orderBy('id','desc')->paginate(100);
+    //     if($books->isNotEmpty())
+    //     {
+    //         $arrBooks = $books->toArray(); 
+    //         $arrBooks["userInfo"] = $userinfo;
+    //     }
+    //     return $arrBooks;
+    // }
     public function index(Request $request)
     {
         $userinfo = auth('sanctum')->user();
         $arrBooks = [];
-        $books = Book::query();
-        if($request->search){
-            $books->where(
-                function($query) use ($request) {
-                  return $query
-                         ->where('title', 'LIKE','%'.$request->search.'%')
-                         ->orWhere('author', 'LIKE','%'.$request->search.'%')
-                         ->orWhere('genre', 'LIKE','%'.$request->search.'%')
-                         ->orWhere('isbn', 'LIKE','%'.$request->search.'%');
-                 });
+        if($request->search != null){
+            $books = $this->searchOnElasticsearch($request->search, $request->page, 100);
+        }else{
+            $books = Book::orderBy('id','desc')->paginate(100);
         }
-        $books = $books->orderBy('id','desc')->paginate(100);
-        if($books->isNotEmpty())
-        {
+        if($books->isNotEmpty()){
             $arrBooks = $books->toArray(); 
             $arrBooks["userInfo"] = $userinfo;
         }
-        return array_reverse($arrBooks);
+
+        return $arrBooks;
+    }
+
+    private function searchOnElasticsearch(string $query, $pageNo, $perPage = 100): array
+    {
+        $model = new Book;
+        $from = ($pageNo > 1) ? (($pageNo - 1) * $perPage) : 0;
+
+        $items = $this->elasticsearch->search([
+            'index' => $model->getSearchIndex(),
+            'type' => $model->getSearchType(),
+            'body' => [
+                'from' => $from,
+                'size' => $perPage,
+                'query' => [
+                    'query_string' => [
+                        'fields' => ['title', 'author', 'genre', 'isbn'],
+                        'query' => '*'.$query.'*',
+                    ],
+                ],
+            ],
+        ]);
+
+        return $items['hits'];
+    }
+
+    private function buildCollection(array $items)
+    {
+        $ids = Arr::pluck($items['hits'], '_id');
+
+        return Book::findMany($ids)
+            ->sortBy(function ($book) use ($ids) {
+                return array_search($book->getKey(), $ids);
+            });
     }
 
     public function add(BookValidateRequest $request)
